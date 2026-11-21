@@ -52,7 +52,8 @@
       <h2>Settings</h2>
       <label for="webhook">Google Apps Script webhook URL</label>
       <input id="webhook" type="url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" />
-      <label class="check"><input id="quick" type="checkbox" /> Save instantly when shared (skip review)</label>
+      <label class="check"><input id="quick" type="checkbox" /> Save instantly when shared (no review screen)</label>
+      <label class="check"><input id="autoBack" type="checkbox" /> Go back to LinkedIn/Naukri automatically after saving</label>
       <button id="saveSettings" class="btn primary">Save settings</button>
       <p class="hint">Use the same URL as the Chrome extension so everything lands in one sheet.
         Then tap Chrome's ⋮ menu → <b>Add to Home screen → Install</b>, and "JobSprint" shows up in every app's Share menu.</p>
@@ -153,6 +154,42 @@
       }
     }
 
+    // ---------- Return to the app that shared ----------
+    let fromShare = false;
+    const autoBack = () => store.get('autoBack', true);
+
+    // A window opened by a share is allowed to close itself; Android then shows
+    // the app you shared from. If the browser refuses, say how to go back.
+    function closeSoon(ms) {
+      if (!fromShare || !autoBack()) return;
+      setTimeout(() => {
+        window.close();
+        setTimeout(() => { if (!document.hidden) show($('status').textContent + '\nDone. Swipe back to return.', 'ok'); }, 400);
+      }, ms);
+    }
+
+    // Instant save for quick mode: the browser delivers it even after this window closes.
+    function beacon(payload) {
+      const webhook = store.get('webhook', '');
+      if (!webhook || !navigator.onLine || !navigator.sendBeacon) return false;
+      return navigator.sendBeacon(webhook, new Blob([JSON.stringify(payload)], { type: 'text/plain;charset=utf-8' }));
+    }
+
+    function quickSave(payload) {
+      const name = [payload.title, payload.company].filter(Boolean).join(' · ') || payload.url;
+      if (beacon(payload)) {
+        remember(payload, false);
+        show(`Saved: ${name}`, 'ok');
+      } else {
+        const q = store.get('queue', []); q.push(payload); store.set('queue', q);
+        remember(payload, true);
+        show(`Offline. Saved on the phone: ${name}. It will sync next time you open JobSprint online.`, 'info');
+      }
+      if (navigator.vibrate) navigator.vibrate(30);
+      $('jobForm').reset();
+      closeSoon(450);
+    }
+
     async function save(payload) {
       $('saveBtn').disabled = true;
       try {
@@ -161,12 +198,15 @@
         let msg = r.action === 'updated' ? `Already in sheet, updated → ${r.status}: ${name}`
           : r.action === 'sent' ? `Sent to sheet: ${name}` : `Added to sheet: ${name}`;
         const missingDetails = !(r.title || payload.title) || !(r.company || payload.company);
-        if (r.action !== 'sent' && missingDetails && String(r.lookup || '').startsWith('failed')) {
+        // Only a failed lookup needs you; leaving a field blank on purpose doesn't.
+        const needsAttention = r.action !== 'sent' && missingDetails && String(r.lookup || '').startsWith('failed');
+        if (needsAttention) {
           msg += `\nCouldn't look up the title/company (${r.lookup.slice(8)}). Type them in and save again, or use JobSprint → Fill missing in the sheet.`;
         }
-        show(msg, missingDetails && r.action !== 'sent' ? 'info' : 'ok');
+        show(msg, needsAttention ? 'info' : 'ok');
         remember({ ...payload, title: r.title || payload.title, company: r.company || payload.company }, false);
         $('jobForm').reset();
+        if (!needsAttention) closeSoon(900); // stay open if you need to fill in details
         return true;
       } catch (err) {
         if (err.fatal) { show(err.message, 'err'); if (/webhook/i.test(err.message)) $('settings').hidden = false; return false; }
@@ -174,6 +214,7 @@
         remember(payload, true);
         show('Offline. Saved on the phone, will sync when you are back online.', 'info');
         $('jobForm').reset();
+        closeSoon(1500);
         return true;
       } finally {
         $('saveBtn').disabled = false;
@@ -225,6 +266,7 @@
       if (url && !/^https:\/\/script\.google(usercontent)?\.com\//.test(url) && !confirm('This does not look like an Apps Script URL. Save anyway?')) return;
       store.set('webhook', url);
       store.set('quick', $('quick').checked);
+      store.set('autoBack', $('autoBack').checked);
       $('settings').hidden = true;
       show('Settings saved', 'ok');
       flushQueue();
@@ -236,6 +278,7 @@
     (async () => {
       $('webhook').value = store.get('webhook', '');
       $('quick').checked = store.get('quick', false);
+      $('autoBack').checked = autoBack();
       if (!store.get('webhook', '')) $('settings').hidden = false;
       renderRecent();
 
@@ -243,10 +286,12 @@
       const shared = { title: q.get('title') || '', text: q.get('text') || '', url: q.get('url') || '' };
       if (shared.title || shared.text || shared.url) {
         history.replaceState(null, '', location.pathname); // so a refresh doesn't re-save
+        fromShare = true;
         const p = parseShare(shared);
         fillForm(p);
         if (store.get('quick', false) && p.url && store.get('webhook', '')) {
-          await save(payloadFromForm());
+          quickSave(payloadFromForm());
+          return; // window is closing; queued jobs sync next time the app opens normally
         } else {
           show(p.title ? 'Check the details and tap Save.'
             : 'Only a link was shared. Tap Save and the sheet will look up the title & company, or type them in.', 'info');
