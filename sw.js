@@ -1,6 +1,6 @@
 // Caches the app shell so the share screen opens instantly, even offline.
 // Bump VERSION after changing any file so phones pick up the update.
-const VERSION = 'jobsprint-v1';
+const VERSION = 'jobsprint-v2';
 const SHELL = ['./', 'index.html', 'parse.js', 'manifest.webmanifest', 'icons/icon192.png'];
 
 self.addEventListener('install', (e) => {

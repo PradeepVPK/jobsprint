@@ -28,7 +28,7 @@
     .check { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-weight: 500; color: inherit; font-size: 15px; }
     .check input { width: 20px; height: 20px; }
     .hint { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
-    .status { padding: 12px 14px; border-radius: 10px; margin-bottom: 14px; font-weight: 600; }
+    .status { white-space: pre-line; padding: 12px 14px; border-radius: 10px; margin-bottom: 14px; font-weight: 600; }
     .status.ok { background: #e3fcef; color: #164b35; }
     .status.err { background: #ffeceb; color: var(--danger); }
     .status.info { background: #e9f2ff; color: #0c3e7a; }
@@ -157,9 +157,14 @@
       $('saveBtn').disabled = true;
       try {
         const r = await post(payload);
-        const name = r.title || payload.title || payload.url;
-        show(r.action === 'updated' ? `Already in sheet, updated → ${r.status}: ${name}`
-           : r.action === 'sent' ? `Sent to sheet: ${name}` : `Added to sheet: ${name}`, 'ok');
+        const name = [r.title || payload.title, r.company || payload.company].filter(Boolean).join(' · ') || payload.url;
+        let msg = r.action === 'updated' ? `Already in sheet, updated → ${r.status}: ${name}`
+          : r.action === 'sent' ? `Sent to sheet: ${name}` : `Added to sheet: ${name}`;
+        const missingDetails = !(r.title || payload.title) || !(r.company || payload.company);
+        if (r.action !== 'sent' && missingDetails && String(r.lookup || '').startsWith('failed')) {
+          msg += `\nCouldn't look up the title/company (${r.lookup.slice(8)}). Type them in and save again, or use JobSprint → Fill missing in the sheet.`;
+        }
+        show(msg, missingDetails && r.action !== 'sent' ? 'info' : 'ok');
         remember({ ...payload, title: r.title || payload.title, company: r.company || payload.company }, false);
         $('jobForm').reset();
         return true;
@@ -243,7 +248,8 @@
         if (store.get('quick', false) && p.url && store.get('webhook', '')) {
           await save(payloadFromForm());
         } else {
-          show('Check the details and tap Save.', 'info');
+          show(p.title ? 'Check the details and tap Save.'
+            : 'Only a link was shared. Tap Save and the sheet will look up the title & company, or type them in.', 'info');
           $('title').focus();
         }
       }
